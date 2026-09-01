@@ -112,7 +112,25 @@ export default function ReceiptPage() {
           .eq('order_id', orderId)
           .maybeSingle();
 
-        if (error) throw error;
+        if (error) {
+  console.error('Supabase receipt error:', error);
+
+  const storedReceipts = JSON.parse(
+    localStorage.getItem('scanova_receipts') || '[]'
+  );
+
+  const foundReceipt = storedReceipts.find(
+    (r: ReceiptData) => r.orderId === orderId
+  );
+
+  if (foundReceipt) {
+    setReceipt(foundReceipt);
+  } else {
+    setNotFound(true);
+  }
+
+  return;
+}
 
         if (data) {
           let customerName = 'Customer';
