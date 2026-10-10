@@ -18,21 +18,114 @@ export default function ResetPassword() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    let isMounted = true;
+
+    // Listen for Supabase PASSWORD_RECOVERY event
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!isMounted) return;
+      if (event === 'PASSWORD_RECOVERY' || (session && event === 'SIGNED_IN')) {
+        setIsLinkInvalid(false);
+        setError('');
+        setLoading(false);
+      }
+    });
+
     const checkSession = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        if (!session) {
-          setError('Invalid or expired password reset link. Please request a new one from the Login page.');
-          setIsLinkInvalid(true);
+        if (session) {
+          if (isMounted) {
+            setIsLinkInvalid(false);
+            setLoading(false);
+          }
+          return;
+        }
+
+        // If no session yet, check if there's a recovery hash or code in the URL
+        const hash = window.location.hash;
+        const search = window.location.search;
+        const urlParams = new URLSearchParams(search);
+        const code = urlParams.get('code');
+        const tokenHash = urlParams.get('token_hash');
+        const type = urlParams.get('type');
+
+        // Handle PKCE code exchange (Supabase newer auth flow)
+        if (code) {
+          try {
+            const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(code);
+            if (!exchangeErr) {
+              if (isMounted) {
+                setIsLinkInvalid(false);
+                setLoading(false);
+              }
+              return;
+            }
+          } catch (e) {
+            console.warn('[ResetPassword] exchangeCodeForSession error:', e);
+          }
+        }
+
+        // Handle token_hash verification
+        if (tokenHash && type === 'recovery') {
+          try {
+            const { error: otpErr } = await supabase.auth.verifyOtp({
+              token_hash: tokenHash,
+              type: 'recovery',
+            });
+            if (!otpErr) {
+              if (isMounted) {
+                setIsLinkInvalid(false);
+                setLoading(false);
+              }
+              return;
+            }
+          } catch (e) {
+            console.warn('[ResetPassword] verifyOtp error:', e);
+          }
+        }
+
+        const hasRecoveryToken = 
+          hash.includes('type=recovery') || 
+          hash.includes('access_token=') || 
+          Boolean(code) ||
+          Boolean(tokenHash);
+
+        if (!hasRecoveryToken) {
+          if (isMounted) {
+            setError('Invalid or expired password reset link. Please request a new one from the Login page.');
+            setIsLinkInvalid(true);
+            setLoading(false);
+          }
+        } else {
+          // Allow Supabase client up to 2 seconds to exchange implicit hash for session
+          setTimeout(async () => {
+            if (!isMounted) return;
+            const { data: { session: delayedSession } } = await supabase.auth.getSession();
+            if (!delayedSession) {
+              setError('Password reset link is invalid or has expired. Please request a new link.');
+              setIsLinkInvalid(true);
+            } else {
+              setIsLinkInvalid(false);
+              setError('');
+            }
+            setLoading(false);
+          }, 1500);
         }
       } catch (err) {
-        setError('Error checking session status. Please request a new link.');
-        setIsLinkInvalid(true);
-      } finally {
-        setLoading(false);
+        if (isMounted) {
+          setError('Error checking session status. Please request a new link.');
+          setIsLinkInvalid(true);
+          setLoading(false);
+        }
       }
     };
+
     checkSession();
+
+    return () => {
+      isMounted = false;
+      subscription?.unsubscribe();
+    };
   }, []);
 
   const handleResetPassword = async (e: React.FormEvent) => {
